@@ -1,0 +1,8 @@
+# Ignorar el archivo de claves secretas
+.env
+
+# Ignorar la carpeta de caché de Python
+__pycache__/
+
+# Ignorar el archivo donde están los PDFs base
+archivos_base
