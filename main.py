@@ -1,6 +1,7 @@
 import os
 import chromadb
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException, Security
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from llama_index.core import Settings, VectorStoreIndex
 from llama_index.core.retrievers import RecursiveRetriever
@@ -9,18 +10,42 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.llms.openai import OpenAI
 from llama_index.embeddings.openai import OpenAIEmbedding
 from dotenv import load_dotenv
+
 load_dotenv()
 
 # --- 1. CONFIGURACIÓN ---
-# Carga las claves de API (igual que en tu script de ingesta)
+# Carga las claves de API 
 os.environ["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
 
 # Configura el LLM y el Embedding Model
-# (Referencia: Components_Of_LlamaIndex.ipynb)
-Settings.llm = OpenAI(model="gpt-4o-mini") # gpt-4o-mini es rápido y barato
+Settings.llm = OpenAI(model="gpt-4o-mini")
 Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-small")
 
-# --- 2. INICIALIZACIÓN DE LA APP FASTAPI ---
+# --- 2. CONFIGURACIÓN DE SEGURIDAD (API TOKEN) ---
+
+# Carga el token de API desde el archivo .env
+API_TOKEN_CORRECTO = os.environ.get("API_TOKEN")
+
+# Define el esquema de seguridad: esperamos un header llamado "X-API-Token"
+api_key_header = APIKeyHeader(name="X-API-Token")
+
+# Función de dependencia que valida el token
+async def verificar_api_token(api_key: str = Security(api_key_header)):
+    if not API_TOKEN_CORRECTO:
+        # Error de seguridad si el token no está configurado en el servidor
+        raise HTTPException(
+            status_code=500, 
+            detail="Error del servidor: API Token no configurado."
+        )
+    if api_key != API_TOKEN_CORRECTO:
+        # Error si el cliente envía un token incorrecto
+        raise HTTPException(
+            status_code=401, 
+            detail="Token de API inválido o faltante"
+        )
+    return api_key
+
+# --- 3. INICIALIZACIÓN DE LA APP FASTAPI ---
 app = FastAPI(
     title="API de Consulta del POT de Bogotá",
     description="Una API para hacer preguntas en lenguaje natural sobre los documentos del POT.",
@@ -30,7 +55,7 @@ app = FastAPI(
 # Variable global para el motor de consulta
 query_engine = None
 
-# --- 3. CARGA DEL ÍNDICE AL INICIAR LA API ---
+# --- 4. CARGA DEL ÍNDICE AL INICIAR LA API ---
 @app.on_event("startup")
 async def startup_event():
     global query_engine
@@ -43,7 +68,6 @@ async def startup_event():
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     
     # Carga el índice desde el vector store
-    # (Referencia: Ingestion_Pipeline.ipynb)
     index = VectorStoreIndex.from_vector_store(
         vector_store=vector_store,
         embed_model=Settings.embed_model
@@ -52,15 +76,12 @@ async def startup_event():
     # --- LA LÓGICA CLAVE DE RAG ---
     
     # 1. Crear el Retriever (Recuperador)
-    # Usamos "recursive" para que pueda consultar las TABLAS
-    # (Referencia: Advanced_RAG_with_LlamaParse.ipynb)
     retriever = index.as_retriever(
         similarity_top_k=5,
-        retriever_mode="recursive" # ¡Clave para las tablas!
+        retriever_mode="recursive"
     )
     
     # 2. Crear el Motor de Consulta (Query Engine)
-    # (Referencia: Components_Of_LlamaIndex.ipynb)
     query_engine = RetrieverQueryEngine.from_args(
         retriever=retriever,
         llm=Settings.llm,
@@ -69,31 +90,35 @@ async def startup_event():
     
     print("¡Índice cargado y motor de consulta listo!")
 
-# --- 4. MODELOS DE DATOS (REQUEST/RESPONSE) ---
+# --- 5. MODELOS DE DATOS (REQUEST/RESPONSE) ---
 class QueryRequest(BaseModel):
     question: str
 
 class QueryResponse(BaseModel):
     answer: str
 
-# --- 5. EL ENDPOINT DE LA API ---
-@app.post("/query", response_model=QueryResponse)
+# --- 6. EL ENDPOINT DE LA API (PROTEGIDO) ---
+@app.post("/query", 
+          response_model=QueryResponse,
+          dependencies=[Depends(verificar_api_token)] 
+         )
 async def query_pot(request: QueryRequest):
     """
     Recibe una pregunta en lenguaje natural y consulta el RAG del POT.
+    (Solo con token de API válido)
     """
     if not query_engine:
         # Esto no debería pasar si el startup_event funcionó
         return QueryResponse(answer="Error: El motor de consulta no está inicializado.")
         
-    print(f"Recibida consulta: {request.question}")
+    print(f"Recibida consulta (autenticada): {request.question}")
     
     # Ejecuta la consulta
     response = await query_engine.aquery(request.question)
     
     return QueryResponse(answer=str(response))
 
-# --- 6. ENDPOINT DE BIENVENIDA (OPCIONAL) ---
+# --- 7. ENDPOINT DE BIENVENIDA (OPCIONAL) ---
 @app.get("/")
 def read_root():
     return {"message": "API del POT de Bogotá está activa. Use el endpoint /query para hacer preguntas."}
