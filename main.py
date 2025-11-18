@@ -3,9 +3,10 @@ import chromadb
 from fastapi import FastAPI, Depends, HTTPException, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
-from llama_index.core import Settings, VectorStoreIndex,PromptTemplate
+from llama_index.core import Settings, VectorStoreIndex
 from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.vector_stores.chroma import ChromaVectorStore
+from llama_index.core.postprocessor import SimilarityPostprocessor
 from llama_index.llms.openai import OpenAI
 from llama_index.embeddings.openai import OpenAIEmbedding
 from dotenv import load_dotenv
@@ -17,7 +18,7 @@ load_dotenv()
 os.environ["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
 
 # Configura el LLM y el Embedding Model
-Settings.llm = OpenAI(model="gpt-4o-mini")
+Settings.llm = OpenAI(model="gpt-4o-mini", temperature=0)
 Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-small")
 
 # --- 2. CONFIGURACIÓN DE SEGURIDAD (API TOKEN) ---
@@ -61,37 +62,6 @@ async def startup_event():
     
     print("Iniciando API... Cargando el índice vectorial desde './chroma_db'...")
 
-    # Prompt para la respuesta inicial (Text QA)
-    qa_prompt_str = (
-        "La siguiente es información de contexto del POT de Bogotá.\n"
-        "---------------------\n"
-        "{context_str}\n"
-        "---------------------\n"
-        "Dada la información de contexto y SIN usar conocimiento previo, "
-        "responde la siguiente pregunta.\n"
-        "Si la respuesta no está en el contexto, di: 'Lo siento, esa información no se encuentra en los documentos del POT.'\n"
-        "Pregunta: {query_str}\n"
-        "Respuesta:"
-    )
-
-    # Prompt para refinar la respuesta (si encuentra más fragmentos relevantes)
-    refine_prompt_str = (
-        "La pregunta original es: {query_str}\n"
-        "Tenemos una respuesta existente: {existing_answer}\n"
-        "Tenemos la oportunidad de refinar la respuesta existente "
-        "(solo si es necesario) con más contexto a continuación.\n"
-        "------------\n"
-        "{context_msg}\n"
-        "------------\n"
-        "Dado el nuevo contexto, refina la respuesta original para responder mejor la pregunta. "
-        "Si el contexto no es útil, devuelve la respuesta original. "
-        "No uses conocimiento previo fuera de este contexto.\n"
-        "Respuesta Refinada:"
-    )
-
-    # Convertirlos a objetos PromptTemplate
-    text_qa_template = PromptTemplate(qa_prompt_str)
-    refine_template = PromptTemplate(refine_prompt_str)
         
     # Conecta a la base de datos ChromaDB local
     db = chromadb.PersistentClient(path="./chroma_db")
@@ -104,24 +74,28 @@ async def startup_event():
         embed_model=Settings.embed_model
     )
     
-    # --- LA LÓGICA CLAVE DE RAG ---
+# --- LA LÓGICA CLAVE DE RAG (CORREGIDA) ---
     
-    # 1. Crear el Retriever (Recuperador)
+    # 1. Crear el Retriever (El "Detective" para tablas)
+    # (Como en el notebook Advanced_RAG_with_LlamaParse.ipynb)
     retriever = index.as_retriever(
         similarity_top_k=5,
-        retriever_mode="recursive"
+        retriever_mode="recursive" 
     )
     
-    # 2. Crear el Motor de Consulta (Query Engine)
+    # 2. Crear el Postprocessor (El "Filtro" anti-Quijote)
+    postprocessor = SimilarityPostprocessor(similarity_cutoff=0.7)
+
+    # 3. Ensamblar UN SOLO Motor de Consulta
+    # (Borra las dos definiciones de query_engine que tenías)
     query_engine = RetrieverQueryEngine.from_args(
-            retriever=retriever,
-            llm=Settings.llm,
-            text_qa_template=text_qa_template, 
-            refine_template=refine_template, 
-            verbose=True
-        )
+        retriever=retriever,
+        llm=Settings.llm,
+        node_postprocessors=[postprocessor], # <--- ¡Aquí combinamos ambos!
+        verbose=True
+    )
     
-    print("¡Índice cargado y motor de consulta listo!")
+    print("¡Índice cargado con Retriever Recursivo Y Filtro de Similitud!")
 
 # --- 5. MODELOS DE DATOS (REQUEST/RESPONSE) ---
 class QueryRequest(BaseModel):
