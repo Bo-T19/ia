@@ -69,7 +69,7 @@ async def startup_event():
         "---------------------\n"
         "Dada la información de contexto y SIN usar conocimiento previo, "
         "responde la siguiente pregunta.\n"
-        "Si la respuesta no está en el contexto, di: 'Lo siento, no he encontrado información al respecto en los documentos del POT. Trata de escribirla en otros términos para hacer una búsqueda más efectiva en los documentos del POT'\n"
+        "Si la respuesta no está en el contexto, di: 'Lo siento, no he encontrado información al respecto en los documentos del POT. Trata de escribir la pregunta en otros términos para hacer una búsqueda más efectiva en los documentos del POT'\n"
         "Pregunta: {query_str}\n"
         "Respuesta:"
     )
