@@ -3,8 +3,7 @@ import chromadb
 from fastapi import FastAPI, Depends, HTTPException, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
-from llama_index.core import Settings, VectorStoreIndex
-from llama_index.core.retrievers import RecursiveRetriever
+from llama_index.core import Settings, VectorStoreIndex,PromptTemplate
 from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.llms.openai import OpenAI
@@ -61,7 +60,39 @@ async def startup_event():
     global query_engine
     
     print("Iniciando API... Cargando el índice vectorial desde './chroma_db'...")
-    
+
+    # Prompt para la respuesta inicial (Text QA)
+    qa_prompt_str = (
+        "La siguiente es información de contexto del POT de Bogotá.\n"
+        "---------------------\n"
+        "{context_str}\n"
+        "---------------------\n"
+        "Dada la información de contexto y SIN usar conocimiento previo, "
+        "responde la siguiente pregunta.\n"
+        "Si la respuesta no está en el contexto, di: 'Lo siento, esa información no se encuentra en los documentos del POT.'\n"
+        "Pregunta: {query_str}\n"
+        "Respuesta:"
+    )
+
+    # Prompt para refinar la respuesta (si encuentra más fragmentos relevantes)
+    refine_prompt_str = (
+        "La pregunta original es: {query_str}\n"
+        "Tenemos una respuesta existente: {existing_answer}\n"
+        "Tenemos la oportunidad de refinar la respuesta existente "
+        "(solo si es necesario) con más contexto a continuación.\n"
+        "------------\n"
+        "{context_msg}\n"
+        "------------\n"
+        "Dado el nuevo contexto, refina la respuesta original para responder mejor la pregunta. "
+        "Si el contexto no es útil, devuelve la respuesta original. "
+        "No uses conocimiento previo fuera de este contexto.\n"
+        "Respuesta Refinada:"
+    )
+
+    # Convertirlos a objetos PromptTemplate
+    text_qa_template = PromptTemplate(qa_prompt_str)
+    refine_template = PromptTemplate(refine_prompt_str)
+        
     # Conecta a la base de datos ChromaDB local
     db = chromadb.PersistentClient(path="./chroma_db")
     chroma_collection = db.get_collection("pot_bogota")
@@ -83,10 +114,12 @@ async def startup_event():
     
     # 2. Crear el Motor de Consulta (Query Engine)
     query_engine = RetrieverQueryEngine.from_args(
-        retriever=retriever,
-        llm=Settings.llm,
-        verbose=True
-    )
+            retriever=retriever,
+            llm=Settings.llm,
+            text_qa_template=text_qa_template, 
+            refine_template=refine_template, 
+            verbose=True
+        )
     
     print("¡Índice cargado y motor de consulta listo!")
 
