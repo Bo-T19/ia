@@ -10,6 +10,7 @@ from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.chat_engine import ContextChatEngine # <--- IMPORTANTE
 from dotenv import load_dotenv
+from typing import List, Optional
 
 load_dotenv()
 
@@ -90,8 +91,15 @@ async def startup_event():
 class QueryRequest(BaseModel):
     question: str
 
+class SourceNode(BaseModel):
+    text: str
+    file_path: Optional[str] = None
+    score: Optional[float] = None
+
 class QueryResponse(BaseModel):
     answer: str
+    sources: List[SourceNode]
+
 
 # --- 6. EL ENDPOINT DE LA API (PROTEGIDO) ---
 @app.post("/query", 
@@ -100,14 +108,31 @@ class QueryResponse(BaseModel):
          )
 async def query_pot(request: QueryRequest):
     if not chat_engine:
-        return QueryResponse(answer="Error: El motor de consulta no está inicializado.")
+        raise HTTPException(status_code=503, detail="El motor de consulta no está inicializado.")
         
     print(f"Recibida consulta (autenticada): {request.question}")
     
-    # Usamos .achat() (Async Chat) que usa la memoria
+    # --- ¡CAMBIO AQUÍ: Usamos .achat() en lugar de .aquery()! ---
     response = await chat_engine.achat(request.question)
     
-    return QueryResponse(answer=str(response))
+    # 1. Extraer la respuesta de texto
+    answer = str(response)
+
+    # 2. Extraer los nodos de contexto (fuentes)
+    source_nodes_data = []
+    if response.source_nodes:
+        for node_with_score in response.source_nodes:
+            node = node_with_score.node
+            source_nodes_data.append(
+                SourceNode(
+                    text=node.get_content(),
+                    file_path=node.metadata.get("file_path", "N/A"), # Obtenemos la ruta del archivo
+                    score=node_with_score.score
+                )
+            )
+    
+    # 3. Devolver el objeto JSON completo
+    return QueryResponse(answer=answer, sources=source_nodes_data)
 
 # --- 7. ENDPOINT DE BIENVENIDA (OPCIONAL) ---
 @app.get("/")
